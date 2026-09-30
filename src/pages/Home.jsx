@@ -45,8 +45,8 @@ export default function Home() {
             <motion.div whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.98 }}>
               <motion.a
                 as={Link}
-                href="/register"
-                to="/register"
+                href="/register.jsx"
+                to="/register.jsx"
                 className="rounded-lg bg-[#1e3a8a] px-6 py-3.5 text-sm font-semibold text-white shadow-md hover:bg-blue-900 transition-all"
                 transition={{ type: 'spring', stiffness: 300 }}>
                 {t('accessPortal', 'Access Portal')}
@@ -55,8 +55,8 @@ export default function Home() {
             <motion.div whileHover={{ y: -2 }}>
               <motion.a
                 as={Link}
-                href="/login"
-                to="/login"
+                href="/login.jsx"
+                to="/login.jsx"
                 className="text-sm font-bold leading-6 text-gray-900 hover:text-[#1e3a8a] transition-colors"
                 transition={{ type: 'spring', stiffness: 300 }}>
                 {t('citizenLogin', 'Citizen Login')} <span aria-hidden="true">→</span>
