@@ -1,5 +1,5 @@
 import React from 'react';
-import { CircleMarker, MapContainer, Popup, TileLayer } from 'react-leaflet';
+import { Circle, CircleMarker, MapContainer, Popup, TileLayer } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 
 const statusConfig = {
@@ -14,7 +14,7 @@ const mapDefaults = {
   zoom: 5,
 };
 
-export default function DashboardMap({ issues, userLocation }) {
+export default function DashboardMap({ issues, userLocation, community }) {
   // Ensure we safely pull out reports possessing actual numeric coordinates natively
   const reportsWithCoordinates = issues
     .filter(
@@ -30,13 +30,17 @@ export default function DashboardMap({ issues, userLocation }) {
       longitude: Number(report.longitude),
     }));
 
+  const communityCenter = community?.centerLatitude && community?.centerLongitude
+    ? [Number(community.centerLatitude), Number(community.centerLongitude)]
+    : null;
+
   const center =
     reportsWithCoordinates.length > 0
       ? [reportsWithCoordinates[0].latitude, reportsWithCoordinates[0].longitude]
-      : userLocation || mapDefaults.center;
+      : communityCenter || userLocation || mapDefaults.center;
 
   const zoom =
-    reportsWithCoordinates.length > 0 ? 13 : userLocation ? 12 : mapDefaults.zoom;
+    reportsWithCoordinates.length > 0 ? 13 : communityCenter ? 11 : userLocation ? 12 : mapDefaults.zoom;
 
   return (
     <div className="relative z-0 overflow-hidden rounded-[20px] border border-gray-200 bg-white shadow-sm mt-6 mb-6">
@@ -46,6 +50,30 @@ export default function DashboardMap({ issues, userLocation }) {
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
+
+          {/* Community Authorized Boundary Circle */}
+          {communityCenter && (
+            <Circle
+              center={communityCenter}
+              radius={Number(community.allowedRadiusMeters) || 35000}
+              pathOptions={{
+                color: '#1e3a8a',
+                fillColor: '#3b82f6',
+                fillOpacity: 0.08,
+                weight: 1.5,
+                dashArray: '6, 6',
+              }}
+            >
+              <Popup>
+                <div className="text-xs">
+                  <p className="font-bold text-[#1e3a8a]">{community.name} Authorized Jurisdiction</p>
+                  <p className="text-gray-500 text-[10px]">
+                    Radius: {((Number(community.allowedRadiusMeters) || 35000) / 1000).toFixed(0)} km
+                  </p>
+                </div>
+              </Popup>
+            </Circle>
+          )}
 
           {userLocation ? (
             <CircleMarker
