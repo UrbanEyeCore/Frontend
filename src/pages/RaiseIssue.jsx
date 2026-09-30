@@ -33,6 +33,13 @@ export default function RaiseIssue() {
   const [showDuplicateModal, setShowDuplicateModal] = useState(false);
   const { t } = useTranslation();
 
+  const [community, setCommunity] = useState(null);
+  const [accuracy, setAccuracy] = useState(null);
+  const [isCalibratingGps, setIsCalibratingGps] = useState(true);
+  const [locationValidation, setLocationValidation] = useState({ status: 'checking', data: null, error: null });
+  const bestAccuracyRef = useRef(null);
+  const watchIdRef = useRef(null);
+
   const [form, setForm] = useState({
     title: '',
     category: isUpdate ? 'UPDATE' : '',
@@ -44,21 +51,139 @@ export default function RaiseIssue() {
 
   const categories = ['Garbage', 'News', 'Water', 'Traffic', 'Road', 'Air Quality'];
 
-  useEffect(() => {
-    // Attempt Geolocation
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => setForm(f => ({ ...f, latitude: pos.coords.latitude, longitude: pos.coords.longitude })),
-        (err) => {
-          console.log("Geo error: ", err);
-          setAddress('Location unavailable');
-        },
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
-      );
-    } else {
+  const startHighAccuracyGeolocation = () => {
+    if (!navigator.geolocation) {
       setAddress('Geolocation not supported');
+      setLocationValidation({
+        status: 'denied',
+        data: null,
+        error: 'Geolocation is not supported by your browser.'
+      });
+      setIsCalibratingGps(false);
+      return;
     }
-  }, []);
+
+    setIsCalibratingGps(true);
+
+    const highAccuracyOptions = {
+      enableHighAccuracy: true,
+      maximumAge: 0, // Enforce fresh hardware scan (no cached network approximations)
+      timeout: 30000
+    };
+
+    // const handlePosSuccess = (pos) => {
+    //   const lat = pos.coords.latitude;
+    //   const lon = pos.coords.longitude;
+    //   const acc = pos.coords.accuracy;
+
+    //   // Update if first fix or if precision is improved
+    //   if (bestAccuracyRef.current === null || acc <= bestAccuracyRef.current || Math.abs(acc - bestAccuracyRef.current) < 5) {
+    //     bestAccuracyRef.current = acc;
+    //     setForm(f => ({ ...f, latitude: lat, longitude: lon }));
+    //     setAccuracy(acc);
+    //     validateLocationWithBackend(lat, lon, acc);
+    //   }
+
+    //   if (acc <= 35) {
+    //     setIsCalibratingGps(false);
+    //   }
+    // };
+
+    const handlePosSuccess = (pos) => {
+  const lat = pos.coords.latitude;
+  const lon = pos.coords.longitude;
+  const acc = pos.coords.accuracy;
+
+  // Only accept a reading if it is strictly more precise than the best one so far
+  if (bestAccuracyRef.current === null || acc < bestAccuracyRef.current) {
+    bestAccuracyRef.current = acc;
+    setForm(f => ({ ...f, latitude: lat, longitude: lon }));
+    setAccuracy(acc);
+    validateLocationWithBackend(lat, lon, acc);
+  }
+
+  if (acc <= 35) {
+    setIsCalibratingGps(false);
+  }
+
+  // Precise enough: stop the watch to save battery and avoid jitter
+  if (acc <= 20 && watchIdRef.current !== null) {
+    navigator.geolocation.clearWatch(watchIdRef.current);
+    watchIdRef.current = null;
+  }
+};
+
+    const handlePosError = (err) => {
+      console.warn("High-Accuracy Geolocation Error:", err);
+      if (bestAccuracyRef.current === null) {
+        setAddress('Location unavailable');
+        setLocationValidation({
+          status: 'denied',
+          data: null,
+          error: 'Location access denied or unavailable. Please enable GPS permissions.'
+        });
+      }
+      setIsCalibratingGps(false);
+    };
+
+    // 1. Immediate one-shot fetch for fast initial coordinates
+    navigator.geolocation.getCurrentPosition(handlePosSuccess, handlePosError, highAccuracyOptions);
+
+    // 2. Continuous watch to refine satellite & Wi-Fi triangulation to minimal meters
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+    }
+    watchIdRef.current = navigator.geolocation.watchPosition(handlePosSuccess, handlePosError, highAccuracyOptions);
+
+    // Auto-stop continuous calibrate spinner after 8 seconds
+    setTimeout(() => {
+      setIsCalibratingGps(false);
+    }, 8000);
+  };
+
+  const recalibrateGps = () => {
+    bestAccuracyRef.current = null;
+    startHighAccuracyGeolocation();
+  };
+
+  useEffect(() => {
+    // Fetch community details
+    api.get(`/api/communities/${id}`)
+      .then(res => setCommunity(res.data))
+      .catch(err => console.error("Failed to load community info", err));
+
+    startHighAccuracyGeolocation();
+
+    return () => {
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
+    };
+  }, [id]);
+
+  const validateLocationWithBackend = async (lat, lon, acc) => {
+    setLocationValidation({ status: 'checking', data: null, error: null });
+    try {
+      const res = await api.post(`/api/communities/${id}/location/validate`, {
+        latitude: lat,
+        longitude: lon,
+        accuracy: acc
+      });
+      if (res.data && res.data.eligible) {
+        setLocationValidation({ status: 'valid', data: res.data, error: null });
+      } else {
+        setLocationValidation({ status: 'blocked', data: res.data, error: null });
+      }
+    } catch (err) {
+      console.error("Location validation error: ", err);
+      const errData = err.response?.data;
+      setLocationValidation({
+        status: 'blocked',
+        data: errData || null,
+        error: errData?.message || err.message || 'Location validation failed'
+      });
+    }
+  };
 
   useEffect(() => {
     if (form.latitude && form.longitude) {
@@ -143,6 +268,12 @@ export default function RaiseIssue() {
       alert("Please provide a photo.");
       return;
     }
+
+    if (locationValidation.status === 'blocked' || locationValidation.data?.eligible === false) {
+      alert(locationValidation.data?.message || "Location Authorization Blocked: You are currently outside this community's geographic boundary. Civic issues can only be reported while physically present within the community.");
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -159,7 +290,10 @@ export default function RaiseIssue() {
           imageUrl: photo,
           latitude: form.latitude || 19.0760,
           longitude: form.longitude || 72.8777,
-          communityId: id
+          communityId: id,
+          reporterLatitude: form.latitude || 19.0760,
+          reporterLongitude: form.longitude || 72.8777,
+          reporterAccuracy: accuracy
         };
         await api.post(`/api/admin/community/${id}/updates`, payload);
         alert("Broadcast Update posted successfully!");
@@ -182,6 +316,9 @@ export default function RaiseIssue() {
         formData.append("latitude", form.latitude || 19.0760);
         formData.append("longitude", form.longitude || 72.8777);
         formData.append("communityId", id);
+        formData.append("reporterLatitude", form.latitude || 19.0760);
+        formData.append("reporterLongitude", form.longitude || 72.8777);
+        if (accuracy) formData.append("accuracy", accuracy);
         if (form.title) formData.append("title", form.title);
         if (form.category) formData.append("category", form.category);
         if (form.description) formData.append("userDescription", form.description);
@@ -206,7 +343,9 @@ export default function RaiseIssue() {
       }
     } catch (err) {
       console.error(err);
-      if (err.response && err.response.status === 409 && err.response.data && err.response.data.fallback) {
+      if (err.response && err.response.status === 403 && err.response.data && err.response.data.error === "Location authorization failed") {
+        alert("🚫 Location Authorization Failed:\n\n" + (err.response.data.message || "You are physically outside this community's geographic boundary. Issues can only be reported within your local community."));
+      } else if (err.response && err.response.status === 409 && err.response.data && err.response.data.fallback) {
         setFallbackActive(true);
         alert("AI processing quota exhausted! Please describe the issue manually and submit again.");
       } else if (err.response && err.response.status === 429) {
@@ -259,15 +398,77 @@ export default function RaiseIssue() {
     <div className="min-h-[calc(100vh-86px)] bg-gray-50 flex justify-center py-12 px-4 sm:px-6 lg:px-8">
       <div className="bg-white rounded-xl shadow-md border-t-4 border-[#1e3a8a] p-8 w-full max-w-lg mb-10 h-max">
         <h2 className="text-2xl font-serif font-bold text-[#1e3a8a] mb-2">{isUpdate ? t('broadcastUpdate', 'Broadcast Official Update') : t('fileCivicReport', 'File Civic Report')}</h2>
-        <p className="text-gray-500 text-sm mb-8 font-medium tracking-wide">
+        <p className="text-gray-500 text-sm mb-6 font-medium tracking-wide">
           {isUpdate ? t('pushAnnouncement', 'Push an official announcement to all community citizens.') : t('submitVerifiedData', 'Submit verified issue data to the civic operations center.')}
         </p>
+
+        {/* Location Authorization Status Card */}
+        {locationValidation.status === 'valid' && (
+          <div className="mb-6 p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 shadow-xs">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span className="text-xs font-black uppercase tracking-wider text-emerald-800">
+                {t('locationVerified', 'Location Verified')} — {community?.name || 'Community'} {t('jurisdiction', 'Jurisdiction')}
+              </span>
+            </div>
+            <p className="text-xs text-emerald-700 font-medium leading-relaxed">
+              {locationValidation.data?.message || `Device confirmed inside boundary (~${(locationValidation.data?.distanceMeters / 1000).toFixed(1)} km from center, ±${Math.round(accuracy || 10)}m accuracy).`}
+            </p>
+          </div>
+        )}
+
+        {locationValidation.status === 'blocked' && (
+          <div className="mb-6 p-4 rounded-xl bg-red-50 border-2 border-red-300 text-red-900 shadow-xs">
+            <div className="flex items-center gap-2 mb-1.5">
+              <svg className="w-5 h-5 text-red-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <span className="text-xs font-black uppercase tracking-wider text-red-800">
+                {t('outsideJurisdiction', 'Outside Geographic Boundary — Action Blocked')}
+              </span>
+            </div>
+            <p className="text-xs text-red-700 font-medium leading-relaxed mb-3">
+              {locationValidation.data?.message || `You are physically located ${(locationValidation.data?.distanceMeters / 1000).toFixed(1)} km away from ${community?.name || 'this community'}. Civic issues can only be reported while physically present within the community.`}
+            </p>
+            <button
+              type="button"
+              onClick={() => navigate('/communities')}
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-red-800 bg-red-100 hover:bg-red-200 px-3 py-1.5 rounded-lg transition-colors uppercase tracking-wider"
+            >
+              <span>← {t('browseYourLocalCommunity', 'Find & Switch to Your Local Community')}</span>
+            </button>
+          </div>
+        )}
+
+        {locationValidation.status === 'checking' && (
+          <div className="mb-6 p-3.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 flex items-center gap-2.5">
+            <svg className="w-4 h-4 text-blue-600 animate-spin shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <span className="text-xs font-semibold text-blue-700">
+              {t('checkingLocation', 'Verifying physical device location against community boundary...')}
+            </span>
+          </div>
+        )}
+
+        {locationValidation.status === 'denied' && (
+          <div className="mb-6 p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-900">
+            <p className="text-xs font-bold">{locationValidation.error || 'GPS Location Access Required to file civic reports.'}</p>
+          </div>
+        )}
 
         {fallbackActive && !isUpdate && (
           <div className="mb-6 p-4 bg-amber-50 border-l-4 border-amber-500 rounded-r-lg text-amber-800 text-xs">
             <span className="font-bold">{t('aiQuotaExhausted', 'AI Quota Exhausted:')}</span> {t('enterManually', 'Please enter the report title, category, and situation details manually below.')}
           </div>
         )}
+        {accuracy && accuracy > 100 && !isCalibratingGps && (
+  <div className="mb-6 p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900">
+    <p className="text-xs font-bold">
+      Weak location fix (±{Math.round(accuracy)}m). Turn on GPS / precise location and tap "Refresh GPS" for an accurate position.
+    </p>
+  </div>
+)}
 
         {/* Camera Region */}
         <div className="mb-8 rounded-xl overflow-hidden relative bg-gray-100 min-h-[300px] flex items-center justify-center border-2 border-dashed border-gray-300">
@@ -293,25 +494,44 @@ export default function RaiseIssue() {
         </div>
 
         {/* Location Status Bar */}
-        <div className="flex items-center gap-2 mb-4 px-3 py-2.5 rounded-lg bg-blue-50 border border-blue-100 text-xs">
-          {form.latitude ? (
-            <>
-              <svg className="w-4 h-4 text-green-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-              <span className="text-green-700 font-medium truncate">
-                {address || `${form.latitude.toFixed(5)}, ${form.longitude.toFixed(5)}`}
-              </span>
-            </>
-          ) : (
-            <>
-              <svg className="w-4 h-4 text-blue-400 shrink-0 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              <span className="text-blue-500 font-medium">{t('resolvingGps', 'Resolving GPS location...')}</span>
-            </>
-          )}
+        <div className="flex items-center justify-between gap-2 mb-4 px-3.5 py-2.5 rounded-lg bg-blue-50 border border-blue-100 text-xs">
+          <div className="flex items-center gap-2 truncate flex-1">
+            {form.latitude ? (
+              <>
+                <svg className="w-4 h-4 text-green-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <div className="truncate">
+                  <span className="text-green-800 font-bold block truncate">
+                    {address || `${form.latitude.toFixed(5)}, ${form.longitude.toFixed(5)}`}
+                  </span>
+                  <span className="text-[10px] text-green-600 font-semibold block">
+                    {accuracy ? `High-Accuracy GPS (±${Math.round(accuracy)}m precision)` : 'High-Accuracy GPS Active'}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4 text-blue-500 shrink-0 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                <span className="text-blue-600 font-medium">{t('resolvingGps', 'Enforcing high-accuracy GPS fix...')}</span>
+              </>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={recalibrateGps}
+            title="Refresh & Recalibrate High-Accuracy GPS"
+            className="shrink-0 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-[#1e3a8a] hover:text-blue-900 bg-white hover:bg-blue-100/60 px-2.5 py-1.5 rounded-lg border border-blue-200 transition-colors shadow-2xs"
+          >
+            <svg className={`w-3.5 h-3.5 ${isCalibratingGps ? 'animate-spin text-blue-600' : 'text-[#1e3a8a]'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <span>{isCalibratingGps ? t('calibrating', 'Calibrating...') : t('refreshGps', 'Refresh GPS')}</span>
+          </button>
         </div>
 
         {photo && !cameraActive && (
@@ -371,8 +591,12 @@ export default function RaiseIssue() {
             <button type="button" onClick={() => navigate(-1)} className="flex-1 py-3 bg-gray-100 text-gray-600 rounded-lg text-xs font-bold tracking-widest hover:bg-gray-200 transition-colors uppercase border border-transparent">
               {t('abort', 'Abort')}
             </button>
-            <button disabled={loading} type="submit" className="flex-1 py-3 bg-[#138808] text-white rounded-lg text-xs font-bold tracking-widest shadow-md hover:bg-green-800 transition-colors disabled:opacity-50 uppercase">
-              {loading ? t('transmitting', 'Transmitting...') : (isUpdate ? t('broadcast', 'Broadcast') : t('fileReport2', 'File Report'))}
+            <button 
+              disabled={loading || locationValidation.status === 'blocked'} 
+              type="submit" 
+              className={`flex-1 py-3 text-white rounded-lg text-xs font-bold tracking-widest shadow-md transition-colors uppercase ${locationValidation.status === 'blocked' ? 'bg-gray-400 cursor-not-allowed opacity-60' : 'bg-[#138808] hover:bg-green-800'}`}
+            >
+              {loading ? t('transmitting', 'Transmitting...') : locationValidation.status === 'blocked' ? t('blockedOutsideJurisdiction', 'Blocked (Outside Boundary)') : (isUpdate ? t('broadcast', 'Broadcast') : t('fileReport2', 'File Report'))}
             </button>
           </div>
         </form>

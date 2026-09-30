@@ -69,23 +69,62 @@ export default function Community() {
     return arr;
   }, [issues, activeFilter, selectedCategory]);
 
-  useEffect(() => {
-    fetchCommunityData();
-    fetchProfile();
+  // useEffect(() => {
+  //   fetchCommunityData();
+  //   fetchProfile();
     
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          setUserLocation([position.coords.latitude, position.coords.longitude]);
-        },
-        (error) => {
-          console.warn('Geolocation error:', error);
-          setUserLocation(null);
-        },
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
-      );
-    }
-  }, [id]);
+  //   if (navigator.geolocation) {
+  //     navigator.geolocation.getCurrentPosition(
+  //       (position) => {
+  //         setUserLocation([position.coords.latitude, position.coords.longitude]);
+  //       },
+  //       (error) => {
+  //         console.warn('Geolocation error:', error);
+  //         setUserLocation(null);
+  //       },
+  //       { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+  //     );
+  //   }
+  // }, [id]);
+
+  useEffect(() => {
+  fetchCommunityData();
+  fetchProfile();
+
+  let watchId = null;
+  let bestAcc = Infinity;
+  let stopTimer = null;
+
+  if (navigator.geolocation) {
+    watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const { latitude, longitude, accuracy } = position.coords;
+        if (accuracy < bestAcc) {
+          bestAcc = accuracy;
+          setUserLocation([latitude, longitude]);
+        }
+        if (accuracy <= 20 && watchId !== null) {
+          navigator.geolocation.clearWatch(watchId);
+          watchId = null;
+        }
+      },
+      (error) => {
+        console.warn('Geolocation error:', error);
+      },
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+    );
+    // Stop refining after 15s
+    stopTimer = setTimeout(() => {
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+    }, 15000);
+  }
+
+  return () => {
+    if (stopTimer) clearTimeout(stopTimer);
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+  };
+}, [id]);
 
   useEffect(() => {
     if (community?.location) {
@@ -304,7 +343,8 @@ export default function Community() {
             {/* Live Map Render Layer */}
             <DashboardMap 
               issues={activeTab === 'Issues' ? displayIssues : issues.filter(i => i.isUpdate)} 
-              userLocation={userLocation} 
+              userLocation={userLocation}
+              community={community}
             />
 
             {/* Feed */}
@@ -331,9 +371,55 @@ export default function Community() {
                       </div>
                       <h4 className={`font-bold mb-2 font-serif text-xl text-[#1e3a8a] leading-snug ${translating ? 'opacity-50' : ''}`}>{translated.title}</h4>
                       <p className={`text-gray-700 text-sm mb-4 leading-relaxed font-medium ${translating ? 'opacity-50' : ''}`}>{translated.description}</p>
-                      {update.imageUrl && (
-                        <img src={resolveImageUrl(update.imageUrl)} alt="Official Update" className="w-full h-auto max-h-[600px] object-contain bg-gray-100 rounded-lg mb-2 shadow-sm border border-gray-200" />
+
+                      {update.resolutionNote && (
+                        <div className="mb-4 p-3 bg-emerald-50 border-l-4 border-emerald-500 rounded-r-lg text-xs text-emerald-900 font-medium">
+                          <span className="font-bold uppercase tracking-wider text-emerald-800">{t('resolutionNote', 'Resolution Action Taken')}:</span> {update.resolutionNote}
+                        </div>
                       )}
+
+                      {/* Primary Resolution Evidence Photo */}
+                      {update.resolutionPhotoUrl ? (
+                        <div className="mb-4">
+                          <div className="bg-[#138808] text-white text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded-t-lg flex items-center justify-between">
+                            <span className="flex items-center gap-1.5">
+                              <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" /></svg>
+                              {t('resolutionEvidence', 'Resolution Evidence — Verified')}
+                            </span>
+                            {update.directiveElevatedAt && (
+                              <span className="text-white/80 font-normal">{new Date(update.directiveElevatedAt).toLocaleDateString()}</span>
+                            )}
+                          </div>
+                          <img
+                            src={resolveImageUrl(update.resolutionPhotoUrl)}
+                            alt="Resolution Evidence"
+                            className="w-full h-auto max-h-[600px] object-contain bg-gray-100 rounded-b-lg mb-2 shadow-sm border border-gray-200"
+                          />
+
+                          {/* Optional link to view Original Problem Photo */}
+                          {update.imageUrl && update.imageUrl !== update.resolutionPhotoUrl && (
+                            <details className="mt-2 text-xs text-gray-500">
+                              <summary className="cursor-pointer font-bold text-[#1e3a8a] hover:underline uppercase tracking-wider text-[10px]">
+                                {t('viewOriginalReportPhoto', '▶ View Original Problem Photo (Before Resolution)')}
+                              </summary>
+                              <div className="mt-2 p-2 bg-gray-50 rounded-lg border border-gray-200">
+                                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">{t('originalReportEvidence', 'Original Report Evidence')}</span>
+                                <img
+                                  src={resolveImageUrl(update.imageUrl)}
+                                  alt="Original Report"
+                                  className="w-full h-auto max-h-[300px] object-contain rounded bg-white"
+                                />
+                              </div>
+                            </details>
+                          )}
+                        </div>
+                      ) : update.imageUrl ? (
+                        <img
+                          src={resolveImageUrl(update.imageUrl)}
+                          alt="Official Update"
+                          className="w-full h-auto max-h-[600px] object-contain bg-gray-100 rounded-lg mb-2 shadow-sm border border-gray-200"
+                        />
+                      ) : null}
                     </div>
                   )}
                 </TranslatedText>
